@@ -1,0 +1,272 @@
+---
+title: "IDV Learner Project"
+author: "Luke Douglas"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+
+# set up R
+
+if(!require(tidyverse)) install.packages('tidyverse')
+if(!require(caret)) install.packages('caret')
+if(!require(GGally)) install.packages('GGally')
+if(!require(nnet)) install.packages('nnet')
+if(!require(reshape2)) install.packages('reshape2')
+
+library(tidyverse)
+library(caret)
+library(GGally)
+library(nnet)
+library(reshape2)
+
+```
+
+
+## Introduction
+Looking at the suggested data sets linked in the IDV Learners 'Project Overview', the 'Biomechanical Features of Orthopedic Patients' data set (https://www.kaggle.com/uciml/biomechanical-features-of-orthopedic-patients) in the linked Kaggle 'curated list' seemed interesting. Given the sometimes high costs of medical care and the high level of importance of good treatment for patients, was there a space to help reduce diagnostic effort by providers while also decreasing the chance of error? Classification problems like this are perfect for machine learning. 
+
+The 'Biomechanical Features of Orthopedic Patients' data set exists in two versions, one classifying "patients as belonging to one out of three categories: Normal (100 patients), Disk Hernia (60 patients) or Spondylolisthesis (150 patients)" (Kaggle) while the other has only two categories, where "Disk Hernia and Spondylolisthesis were merged into a single category labelled as 'abnormal'". (Kaggle) The 3 category data set was selected for this project as it seemed more interesting to work with.  
+
+Four classification models were built on a training data set: 1) using the average, 2) a multinomial logistic regression, 3) a k-nearest neighbors model, and 4) a random forest. Testing these models against a test set showed similar accuracy between the multinomial logistic regression, the k-nearest neighbors, and the random forest. Given the context of medical diagnosis, how this accuracy is achieved is also important and a detailed examination of the confusion matricies of each model shows the random forest to be the most appropriate classifier for orthopedic patient diagnostics. 
+
+## Methods
+The first step is to input the data. Minimal structural cleaning was needed other than setting the dependent variable as a factor rather than  a character string. Looking at a boxplot of each variable highlights that there is a potential error 'degree_spondylolisthesis' where the value is greater than 400. If these are degrees, 400 represents over a full rotation - which seems impossible. Perhaps someone misplaced a decimal? 
+
+```{R echo = FALSE}
+
+#### read in the data ####
+# (from https://www.kaggle.com/uciml/biomechanical-features-of-orthopedic-patients )
+
+raw <- read.csv("column_3c_weka.csv") %>% 
+  mutate(class = as.factor(class)) #set the dependent variable to a factor
+
+```
+
+```{R echo = FALSE, message = FALSE}
+
+# build a boxplot of the raw data
+ggplot(melt(raw), aes(variable, value)) + geom_boxplot() 
+# it seems like there may be one error in the data in 'degree_spondylolisthesis' 
+# where it is greater than 400. Maybe someone misplaced a decimal? Let's filter it out. 
+
+```
+
+Filtering out this one row and building a boxplot again shows data that looks much better. 
+
+```{R echo = FALSE, message = FALSE}
+
+# filter out the likely error
+raw_clean <- raw %>% filter(degree_spondylolisthesis < 400) 
+
+# build another boxplot - that looks much better
+ggplot(melt(raw_clean), aes(variable, value)) + geom_boxplot() 
+
+```
+
+Next we create training and test sets; setting aside 10% of the data into a test set for use in the 'Results' section. 
+
+```{R warning = FALSE}
+
+# create training and test sets
+set.seed(1, sample.kind="Rounding") 
+test_index <- createDataPartition(y = raw_clean$class, times = 1, p = 0.1, list = FALSE)
+train_set <- raw_clean[-test_index,]
+test_set <- raw_clean[test_index,]
+
+```
+
+Looking at the training set, one sees there are 278 observations of 6 independent variables (the biomechanical features) and the one dependent variable of 'class', the patient diagnosis. Quick summary stats show a large amount of variation within each feature, which bodes well for being able to use them to determine patient diagnoses.
+
+```{R}
+
+# display some summary statistics of the training set
+str(train_set)
+summary(train_set)
+
+```
+
+Visualizing the data can also give a sense for how successful a machine learning model may be. Looking at a quick scatter plot matrix of the independent variables that is colored by dependent variable shows some separation by class - a good sign! 
+
+```{R, echo = FALSE} 
+
+#build a scatter plot matrix of the independent variables in the training set
+pairs(train_set[,1:5], col = train_set$class)
+
+```
+With a parallel coordinates plot, there also seems to be some interesting grouping by class - individuals with Spondylolisthesis look to generally have higher values across all features while it looks like those with hernias tend to have lower amounts of lumbar lordoisis angle and sacral slope. 
+
+```{R, echo = FALSE}
+
+#build a parallel coordinates plot of the independent variables in the training set
+ggparcoord(train_set, columns = c(1:6), groupColumn = 7, scale = "uniminmax")
+
+```
+
+### Setting baselines: Using the mode and multinominal logistic regression
+For the effort of training machine learning models to be worthwhile, they should at least beat  simple prediction methods in terms of accuracy. Here two simple approaches are used to provide this 'baseline': 1) the most frequent class in the data set (i.e. the 'mode') and 2) a multinominal logistic regression. Since these are both statistical approaches rather than machine learning ones, we can check the validity of each on the training set. 
+
+```{R, echo = FALSE}
+
+#### Build some models ####
+
+#set up a results table to keep track of model accuracy 
+results_table <- tribble(
+  ~set, ~mode, ~regression, ~knn, ~random_forest,
+  "train", 1, 1, 1, 1,
+  "test", 1, 1, 1, 1
+  )
+
+```
+
+### Mode
+
+Looking at the number of observations of each class in the training set, Spondylolisthesis is the mode. Validating this 'model' by using it predict class on our training set shows it is not very accurate even on the training data, so hopes are not high it will do well on the test data... 
+
+```{R} 
+
+# use the mode dependent variable in the training set as the predictor in the test set
+train_freq <- train_set %>% count(class) %>% arrange(desc(n)) #find the mode
+train_mu <- train_set %>% mutate(mu = train_freq[1,1]) 
+confusionMatrix(train_mu$mu, train_set$class)$overall["Accuracy"]
+
+```
+```{R, echo = FALSE}
+
+# add the model accuracy to the results table
+results_table[1,2] <- confusionMatrix(train_mu$mu, train_set$class)$overall[["Accuracy"]]
+
+```
+
+### Regression
+
+Maybe a regression can improve on using the mode? Since the dependent variable 'class' is a un-ordered categorical variable (i.e. there isn't a ranked order to the three classes), multinomial logistic regression is the best option for predicting predict class. Validating this model against the training set shows a much higher accuracy - excellent! 
+
+```{R} 
+
+# build a multinominal logistic regression model using the training set 
+# to predict the test set
+train_multinom <- multinom(class ~ . , data = train_set)
+confusionMatrix(predict(train_multinom, train_set), train_set$class)$overall["Accuracy"]
+
+```
+```{R, echo = FALSE}
+
+# add the model accuracy to the results table
+results_table[1,3] <- confusionMatrix(predict(train_multinom, train_set), train_set$class)$overall[["Accuracy"]]
+
+```
+
+### k-nearest neighbors (kNN) algorithm
+
+Since this is a classification problem, k-nearest neighbors (kNN) is one potential algorithm that might work. We can use 'train' from the caret package with the method 'knn' to do this. Passing the algorithm a large-ish set of potential ks (from 4 to 44, using only the 'evens' to avoid a tie since there's an odd number of classes) lets the package use crossvalidation and select the best k across bootstrapped samples. Plotting this set of ks shows the best tune for the data (given a seed of 1 just before running the algorithm). 
+
+```{R warning = FALSE} 
+
+# fit a knn model to the training set
+set.seed(1, sample.kind="Rounding")
+train_knn <- train(class ~ ., method = "knn", 
+                   data = train_set, 
+                   tuneGrid = data.frame(k = seq(4, 44, 2)))
+ggplot(train_knn, highlight = TRUE)
+
+# display the model
+train_knn
+```
+
+This gives a maximum accuracy of: 
+
+```{R}
+
+# display the maximum accuracy
+max(train_knn$results$Accuracy)
+
+```
+
+```{R echo = FALSE}
+
+# add the model accuracy to the results table
+results_table[1,4] <- max(train_knn$results$Accuracy)
+
+```
+
+### Random forest
+
+Another classification algorithm to try is a random forest - here we again use train() from the caret package to train a model on the training set. 
+
+Given the small number of variables, there isn't much space to tune the random forest with different numbers of randomly sampled variables for each tree (i.e. 'mtry'). Graphing the accuracy of the model versus the number of randomly selected predictors shows which 'mtry' gives the maximum model accuracy. 
+
+```{R warning = FALSE} 
+
+# fit a random forest model to the training set
+set.seed(1, sample.kind="Rounding")
+train_rf <- train(class ~., method = "rf", data = train_set)
+
+train_rf
+
+ggplot(train_rf, highlight = TRUE)
+max(train_rf$results$Accuracy)
+
+```
+
+Given the small number of variables, there isn't much space to tune the random forest with different numbers of randomly sampled variables for each tree. Graphing the accuracy of the model versus the number of randomly selected predictors shows the maximum accuracy is achieved with an mtry of four.  
+
+``` {R echo = FALSE}
+
+# add the model accuracy to the results table
+results_table[1,5] <- max(train_rf$results$Accuracy)
+
+#### Test the models ####
+
+```
+
+## Results
+Now that we've built our models (mode / regression / knn / random forest), let's see how they do. Applying each model against the test set shows they differ in accuracy. 
+
+```{R} 
+
+# use the mode in the training set to predict the test set and add the results to the table
+test_mu <- test_set %>% mutate(mu = train_freq[1,1])
+cm_mode <- confusionMatrix(test_mu$mu, test_set$class)
+results_table[2,2] <-  cm_mode$overall["Accuracy"] 
+
+# test the regression / "Nominal Logistic Regression" and add the results to the table
+cm_regression <- confusionMatrix(predict(train_multinom, test_set), test_set$class)
+results_table[2,3] <- cm_regression$overall["Accuracy"]
+
+# test knn and add the results to the table
+cm_knn <- confusionMatrix(predict(train_knn, test_set), test_set$class)
+results_table[2,4] <- cm_knn$overall["Accuracy"]
+
+# test random forest and add the results to the table
+cm_rf <- confusionMatrix(predict(train_rf, test_set), test_set$class)
+results_table[2,5] <- cm_rf$overall["Accuracy"]
+
+results_table
+
+```
+
+With this data, the accuracy of the models looks the same! But that's not the end of the story, as accuracy can hide important nuance, especially since these models are supposed to be used in a medical context. Setting aside the mode-based model since it's clearly inferior, let's look at the tables for the other three confusion matrices to make sure this accuracy is actually helpful in a medical context. 
+
+```{R}
+
+# look at the confusion matrix tables for the three 'high-performing' models
+cm_regression$table
+cm_knn$table
+cm_rf$table
+
+```
+
+Looking at this by diagnosis:
+
+  - Hernia: The random forest is best, correctly diagnosing four hernias and with only two false positives (seeing a hernia where there is none). Knn has three correct and one false positive. The regression also has three correct and one false positive. Worryingly, the regression also completely misdiagnoses a case of spondylolisthesis as a hernia - the only instance with a complete confusion between two non-normal conditions. 
+
+  - Normal: The regression and kNN both have eight correct 'normal' diagnoses for 'normal' patients, while the random forest has 7. But the regression would also let three people with hearnias walk away thinking they're 'normal' and knn would do similarly for four people (three hernias and one spondylolisthesis - while the random forest would give three mistaken diagnoses of normal (two hernias and one spondylolisthesis).  
+
+  - Spondylolisthesis: All three models correctly identifying 14 cases of spondylolisthesis. All three models have one 'false positive' of seeing spondylolisthesis where there is none. 
+
+## Conclusion
+
+Given the above investigation, it seems like the random forest is the best model to use to support providers in assessing orthopedic patients. It is both more accurate overall, more conservative (in that it lets fewer 'Normals' through), and has zero cases of complete misdiagnosis of non-normal conditions (e.g. confusing a hernia with spondylolisthesis). 
+
+To continue investigating 'Biomechanical Features of Orthopedic Patients', a good next step would be to increase the pool of data - either gathering more observations or adding additional independent variables. Doing either could help create greater differences in model performance and would enable deep investigations into different biomechanical features of hernias and spondylolisthesis. 
